@@ -2,7 +2,7 @@
 // @name         GitHub 批量下载器
 // @name:en      GitHub Multi-File Downloader
 // @namespace    https://github.com/yeyousheng7/github-multi-file-downloader
-// @version      1.1.0
+// @version      1.1.1
 // @description  在 GitHub 仓库页面勾选多个文件或文件夹，并将它们直接下载或打包为 ZIP。
 // @description:en Add checkboxes to GitHub repository file lists and download selected files or folders as individual files or ZIP archives.
 // @homepageURL  https://github.com/yeyousheng7/github-multi-file-downloader
@@ -49,7 +49,7 @@
         // 因此这里可以接受较宽的候选；
         // 后面的 module class 仅作为备选，GitHub 可能随时调整样式导致其失效
         tableCandidate: [
-            'table',
+            'table[aria-labelledby="folders-and-files"]',
             '.Table-module__Box__HZKiQ',
         ],
         // 文件/目录主链接
@@ -232,16 +232,16 @@
             currentPageKey = pageKey;
         }
 
+        const table = findRepositoryFileTable();
+        if (!table) {
+            logger.warn("ui", "未找到代码表格元素, 退出");
+            return;
+        }
+
         // ref 按钮在仓库页面稳定存在，用它作为标志位避免在非仓库页面错误注入
         const refButton = getCurrentRefButton();
         if (!refButton) {
             logger.debug("ui", "当前页面不存在 ref 选择按钮，跳过注入");
-            return;
-        }
-
-        const table = findRepositoryFileTable();
-        if (!table) {
-            logger.warn("ui", "未找到代码表格元素, 退出");
             return;
         }
         ensureHeader(table);
