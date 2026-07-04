@@ -34,14 +34,7 @@
 
     let currentPageKey = null; // 当前页面唯一标识, 用于检测页面变化
 
-    // GitHub 页面元素属性
-    const githubAttribute = {
-        // 页面根级元素 ID
-        githubRootId: "repo-content-pjax-container",
-
-        // 文件夹或文件行 ID 前缀
-        githubFileRowIdPrefix: "folder-row-", // + number, 例如 folder-row-1
-    };
+    const GITHUB_ROOT_ID = "repo-content-pjax-container";
 
     const githubSelectors = {
         // 文件表格本体
@@ -217,6 +210,8 @@
      * @property {string} [cancelText]
      */
 
+    // Bootstrap & Page Lifecycle
+
     logger.info("app", "GitHub Downloader 脚本启动");
 
     setTimeout(() => {
@@ -228,7 +223,7 @@
     function apply() {
         const pageKey = getPageKey();
         if (pageKey !== currentPageKey) {
-            resetSelectionState();
+            selectedEntries.clear();
             currentPageKey = pageKey;
         }
 
@@ -251,7 +246,7 @@
     }
 
     function observeRootChanges() {
-        const root = document.getElementById(githubAttribute.githubRootId);
+        const root = document.getElementById(GITHUB_ROOT_ID);
         if (!root) {
             logger.warn("app", "未找到页面根级元素, 退出");
             return;
@@ -274,48 +269,33 @@
     }
 
     function registerMenuCommands() {
-        GM_registerMenuCommand('设置 GitHub Token', () => {
-            openGitHubTokenDialog();
-        });
+        GM_registerMenuCommand('设置 GitHub Token', openGitHubTokenDialog);
     }
 
-    function addCheckboxes(table) {
-        if (!table) {
-            logger.warn("ui", "代码表格元素为空, 退出");
-            return;
-        }
+    // Repository Table UI
 
+    function addCheckboxes(table) {
         // 下面需要先处理上一级目录行，再处理其余文件行
         // 先后顺序不可调换，否则按钮禁用状态将无法正确设置
-        // 当前逻辑依赖于 addCheckboxToRow 中的防抖判断，以跳过上一级目录行的重复添加
+        // 当前逻辑依赖于 addCheckboxToRow 中的幂等检查，以跳过上一级目录行的重复添加
 
         // 如果在子目录层级，禁用上一级目录的复选框
         const parentDirRow = findParentDirectoryRow(table);
         if (parentDirRow) {
-            addCheckboxToRow(parentDirRow, "parent-dir-row", true);
-            logger.debug("ui", "在上一级目录行添加禁用的复选框");
+            addCheckboxToRow(parentDirRow, true);
         }
 
         // 遍历文件行, 添加复选框
         const fileRows = getEntryRows(table);
         logger.debug("ui", `找到 ${fileRows.length} 个文件行元素`);
 
-        for (let i = 0; i < fileRows.length; i++) {
-            const row = fileRows[i];
-            const rowId = githubAttribute.githubFileRowIdPrefix + (i + 1);
-
-            addCheckboxToRow(row, rowId);
-            logger.debug("ui", `在行 ${rowId} 添加复选框`);
+        for (const row of fileRows) {
+            addCheckboxToRow(row);
         }
     }
 
-    function addCheckboxToRow(rowElement, rowId, disabled = false) {
-        if (!rowElement) {
-            logger.warn("ui", `行元素 ${rowId} 为空, 退出`);
-            return;
-        }
+    function addCheckboxToRow(rowElement, disabled = false) {
         if (rowElement.querySelector('.tm-left-cb')) {
-            logger.debug("ui", `行元素 ${rowId} 已存在复选框, 退出`);
             return;
         }
 
@@ -333,18 +313,12 @@
     }
 
     function ensureHeader(table) {
-        if (!table) {
-            logger.warn("ui", "代码表格元素为空, 退出");
-            return;
-        }
-
         const headTr = table.querySelector('thead tr');
         if (!headTr) {
             logger.warn("ui", "未找到表头行, 退出");
             return;
-        };
+        }
         if (headTr.querySelector('th.tm-left-cell')) {
-            logger.debug("ui", "表头行已存在复选框列, 退出");
             return;
         }
 
@@ -366,11 +340,6 @@
 
     // 在表格上方添加下载工具栏(下载按钮与状态显示)
     function addDownloadToolbar(table) {
-        if (!table) {
-            logger.warn("ui", "未找到代码表格元素, 退出");
-            return;
-        }
-
         const container = table.parentElement;
         if (!container) {
             logger.warn("ui", "未找到表格容器元素, 退出");
@@ -379,21 +348,17 @@
 
         const existingToolbar = document.querySelector('.tm-download-toolbar');
         if (existingToolbar) {
-            logger.debug("ui", "下载工具栏已存在, 退出");
             return;
         }
 
         const toolbar = document.createElement('div');
         toolbar.className = 'tm-download-toolbar';
-        toolbar.style.marginBottom = '8px';
 
         const btn = document.createElement('button');
         btn.className = 'tm-download-btn';
         btn.textContent = '下载所选文件';
         btn.disabled = false;
-        btn.addEventListener('click', () => {
-            startDownload();
-        });
+        btn.addEventListener('click', startDownload);
 
         const status = document.createElement('span');
         status.className = 'tm-download-status is-empty';
@@ -418,11 +383,6 @@
     }
 
     function bindTableEvents(table) {
-        if (!table) {
-            logger.warn("ui", "代码表格元素为空, 退出");
-            return;
-        }
-
         if (table.dataset.tmBound === '1') {
             return;
         }
@@ -451,7 +411,7 @@
     }
 
     async function startDownload() {
-        const entries = getSelectionEntries();
+        const entries = Array.from(selectedEntries.values());
         if (entries.length === 0) {
             clearDownloadStatus();
             await showAlertDialog({
@@ -530,6 +490,8 @@
         }
     }
 
+    // Download Planning
+
     /**
      * 根据选中项构建下载计划
      *
@@ -569,6 +531,8 @@
         }
     }
 
+    // Download Execution
+
     /**
      * 执行下载计划，并在存在成功文件时立即保存结果。
      * 此函数不涉及用户交互
@@ -593,7 +557,7 @@
                 logger.error("download", `未知的输出模式: ${plan.outputMode}`);
                 return result;
             }
-            saveBlob(artifact.blob, artifact.downloadName);
+            saveAs(artifact.blob, artifact.downloadName);
             logger.info("download", `下载完成，成功 ${result.succeeded.length} 个，失败 ${result.failed.length} 个`);
         }
 
@@ -798,7 +762,7 @@
 
     /**
      * @param {DownloadExecutionResult} result
-     * @returns {boolean}
+     * @returns {Promise<boolean>}
      */
     async function confirmRetryFailedItems(result) {
         const title = result.succeeded.length > 0
@@ -814,10 +778,9 @@
         });
     }
 
-
     /**
      * @param {DownloadExecutionResult} result
-     * @returns {void}
+     * @returns {Promise<void>}
      */
     async function alertFinalFailedItems(result) {
         const title = result.succeeded.length > 0
@@ -835,7 +798,6 @@
             confirmText: '知道了',
         });
     }
-
 
     /**
      * @param {Array<{ item: DownloadItem, error: Error }>} failedItems
@@ -864,7 +826,8 @@
 
         for (let attempt = 1; attempt <= maxAttempts; attempt++) {
             try {
-                return await gmFetchArrayBuffer(item.rawUrl, {
+                return await gmRequest(item.rawUrl, {
+                    responseType: "arraybuffer",
                     timeoutMs: SETTINGS.REQUEST_TIMEOUT_MS,
                 });
             } catch (err) {
@@ -883,6 +846,8 @@
 
         throw new Error(`下载重试异常结束: ${item.outputPath}`);
     }
+
+    // GitHub Parsing & Network
 
     /**
      * 从表格行中解析选中项
@@ -905,7 +870,6 @@
         if (!ctx) {
             return null;
         }
-
 
         const ariaLabel = entryLink.getAttribute('aria-label') || '';
 
@@ -1011,7 +975,7 @@
             return [];
         }
 
-        const links = queryAll(githubSelectors.entryLinkCandidate, table);
+        const links = table.querySelectorAll(githubSelectors.entryLinkCandidate.join(', '));
 
         const rows = [];
         const seenRows = new Set();
@@ -1038,7 +1002,7 @@
      * @returns {HTMLTableElement|null}
      */
     function findRepositoryFileTable(root = document) {
-        const entryLinkSelector = joinSelectors(githubSelectors.entryLinkCandidate);
+        const entryLinkSelector = githubSelectors.entryLinkCandidate.join(', ');
 
         for (const selector of githubSelectors.tableCandidate) {
             const tables = root.querySelectorAll(selector);
@@ -1100,11 +1064,6 @@
 
         const row = latestCommitAnchor.closest('tr');
         return row instanceof HTMLTableRowElement ? row : null;
-    }
-
-
-    function getSelectionEntries() {
-        return Array.from(selectedEntries.values());
     }
 
     /**
@@ -1180,20 +1139,21 @@
 
     /**
      * @param {string} url
-     * @param {{ timeoutMs?: number }} [options]
-     * @returns {Promise<ArrayBuffer>}
+     * @param {{ responseType: 'arraybuffer'|'json', headers?: Record<string, string>, timeoutMs?: number }} options
+     * @returns {Promise<any>}
      */
-    function gmFetchArrayBuffer(url, options = {}) {
+    function gmRequest(url, options) {
         const timeoutMs = options.timeoutMs ?? SETTINGS.REQUEST_TIMEOUT_MS;
 
         return new Promise((resolve, reject) => {
             GM_xmlhttpRequest({
                 method: "GET",
                 url,
-                responseType: "arraybuffer",
+                responseType: options.responseType,
                 timeout: timeoutMs,
                 anonymous: false,
                 withCredentials: true, // 让 github.com 登录态生效
+                ...(options.headers ? { headers: options.headers } : {}),
                 onload: (res) => {
                     if (res.status >= 200 && res.status < 300) resolve(res.response);
                     else reject(new Error(`HTTP ${res.status}`));
@@ -1203,36 +1163,6 @@
             });
         });
     }
-
-    /**
-     * @param {string} url
-     * @param {{ headers?: Record<string, string> }} [options]
-     * @returns {Promise<any>}
-     */
-    function gmFetchJson(url, options = {}) {
-        const headers = options.headers || {};
-        return new Promise((resolve, reject) => {
-            GM_xmlhttpRequest({
-                method: "GET",
-                url,
-                responseType: "json",
-                timeout: SETTINGS.REQUEST_TIMEOUT_MS,
-                anonymous: false,
-                withCredentials: true,
-                headers,
-                onload: (res) => {
-                    if (res.status >= 200 && res.status < 300) {
-                        resolve(res.response);
-                    } else {
-                        reject(new Error(`HTTP ${res.status}`));
-                    }
-                },
-                onerror: () => reject(new Error("Network error")),
-                ontimeout: () => reject(new Error(`Request timeout after ${SETTINGS.REQUEST_TIMEOUT_MS}ms`)),
-            });
-        });
-    }
-
 
     // 为 GitHub REST API 请求构建认证头，私有仓库场景会附带 token
     function buildGitHubApiHeaders() {
@@ -1260,9 +1190,11 @@
         const treeRef = encodeURIComponent(ctx.ref);
         const url = `https://api.github.com/repos/${ctx.owner}/${ctx.repo}/git/trees/${treeRef}?recursive=1`;
 
-        return await gmFetchJson(url, { headers: buildGitHubApiHeaders() });
+        return await gmRequest(url, {
+            responseType: "json",
+            headers: buildGitHubApiHeaders(),
+        });
     }
-
 
     /**
      * @param {number} ms
@@ -1273,9 +1205,6 @@
     }
 
     // Dialog & UI Helpers
-    function saveBlob(blob, downloadName) {
-        saveAs(blob, downloadName);
-    }
 
     let downloadStatusClearTimer = null;
 
@@ -1289,29 +1218,24 @@
     }
 
     function buildDialogHtml(message, lines = []) {
-        const hasLines = Array.isArray(lines) && lines.length > 0;
-        const parts = [];
+        const messageHtml = message
+            ? `<div class="tm-dialog-message">${escapeHtml(message)}</div>`
+            : '';
 
-        if (message) {
-            parts.push(`<div class="tm-dialog-message">${escapeHtml(message)}</div>`);
+        if (!Array.isArray(lines) || lines.length === 0) {
+            return messageHtml;
         }
 
-        if (hasLines) {
-            const renderedLines = lines
-                .map(line => `<li class="tm-dialog-line">${escapeHtml(line)}</li>`)
-                .join('');
+        const renderedLines = lines
+            .map(line => `<li class="tm-dialog-line">${escapeHtml(line)}</li>`)
+            .join('');
 
-            parts.push(`<ul class="tm-dialog-lines">${renderedLines}</ul>`);
-
-            return `<div class="tm-dialog-body tm-dialog-body-with-lines">${parts.join('')}</div>`;
-        }
-
-        return parts.join('');
+        return `<div class="tm-dialog-body tm-dialog-body-with-lines">${messageHtml}<ul class="tm-dialog-lines">${renderedLines}</ul></div>`;
     }
 
     /**
-     * @param {{ title: string, message: string, lines?: string[], confirmText?: string }} options
-     * @returns {Promise<boolean>}
+     * @param {DialogOptions} options
+     * @returns {Promise<void>}
      */
     async function showAlertDialog(options) {
         await Swal.fire({
@@ -1323,12 +1247,10 @@
             allowEscapeKey: true,
             heightAuto: false,
         });
-
-        return true;
     }
 
     /**
-     * @param {{ title: string, message: string, lines?: string[], confirmText?: string, cancelText?: string }} options
+     * @param {DialogOptions} options
      * @returns {Promise<boolean>}
      */
     async function showConfirmDialog(options) {
@@ -1388,7 +1310,7 @@
         });
     }
 
-    // 通用工具函数
+    // Generic Helpers
 
     // 尝试多个选择器，返回第一个匹配的元素，无法匹配时返回 null
     function queryFirst(selectors, root = document) {
@@ -1399,28 +1321,14 @@
         return null;
     }
 
-    // 将多个候选选择器拼成 querySelectorAll 可用的逗号表达式
-    function joinSelectors(selectors) {
-        return selectors.join(', ');
-    }
-
-    // 使用候选选择器组批量查询元素
-    function queryAll(selectors, root = document) {
-        return root.querySelectorAll(joinSelectors(selectors));
-    }
-
     function setDownloadButtonState({ disabled, text }) {
-        const btn = getDownloadButton();
+        const btn = document.querySelector('.tm-download-btn');
         if (!btn) {
             logger.warn("ui", "未找到下载按钮元素");
             return;
         }
         btn.disabled = disabled;
         btn.textContent = text;
-    }
-
-    function resetSelectionState() {
-        selectedEntries.clear();
     }
 
     function resetDownloadButtonState() {
@@ -1431,21 +1339,9 @@
         return location.pathname + location.search;
     }
 
-    function getDownloadButton() {
-        return document.querySelector('.tm-download-btn');
-    }
-
-    function getDownloadStatusElement() {
-        return document.querySelector('.tm-download-status');
-    }
-
-    function getDownloadToolbar() {
-        return document.querySelector('.tm-download-toolbar');
-    }
-
     function setDownloadStatus(text) {
-        const status = getDownloadStatusElement();
-        const toolbar = getDownloadToolbar();
+        const status = document.querySelector('.tm-download-status');
+        const toolbar = document.querySelector('.tm-download-toolbar');
         if (!status) {
             return;
         }
@@ -1520,10 +1416,13 @@
         GM_deleteValue(SETTINGS.GITHUB_TOKEN_STORED_KEY);
     }
 
+    // Styles
+
     GM_addStyle(`
         .tm-download-toolbar {
             display: inline-flex;
             align-items: stretch;
+            margin-bottom: 8px;
         }
         .tm-download-btn {
             appearance: none;
@@ -1594,28 +1493,20 @@
             overflow-wrap: anywhere;
             list-style: inherit;
         }
-        th.tm-left-cell {
-            box-sizing: border-box !important;
-            width: 32px !important;
-            min-width: 32px !important;
-            max-width: 32px !important;
-
-            vertical-align: middle !important;
-            padding: 0 !important;
-            text-align: center !important;
-
-        }
+        th.tm-left-cell,
         td.tm-left-cell {
             box-sizing: border-box !important;
-
             width: 32px !important;
             min-width: 32px !important;
             max-width: 32px !important;
-
             vertical-align: middle !important;
-            padding: 4px 0 0 0 !important;
             text-align: center !important;
-
+        }
+        th.tm-left-cell {
+            padding: 0 !important;
+        }
+        td.tm-left-cell {
+            padding: 4px 0 0 0 !important;
             background: inherit !important;
         }
         input.tm-left-cb {
