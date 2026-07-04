@@ -168,7 +168,7 @@
      */
 
     /**
-     * @typedef {Object} ResolveSelectionResult
+     * @typedef {Object} SelectionResolutionResult
      * @property {DownloadItem[]} items
      * @property {SelectionEntry[]} failedEntries
      */
@@ -182,23 +182,9 @@
      */
 
     /**
-     * @typedef {Object} DownloadArtifact
-     * @property {Blob} blob
-     * @property {string} downloadName
-     */
-
-    /**
      * @typedef {Object} DownloadExecutionResult
      * @property {Array<DownloadItem & { bytes: Uint8Array }>} succeeded
      * @property {Array<{ item: DownloadItem, error: Error }>} failed
-     */
-
-    /**
-     * @typedef {Object} DownloadPlan
-     * @property {DownloadItem[]} items 本次要下载的文件项
-     * @property {'single'|'zip'} outputMode 输出模式：单文件或 ZIP
-     * @property {string} zipFilename ZIP 下载文件名
-     * @property {SelectionEntry[]} failedEntries 下载计划中解析失败的条目列表
      */
 
     /**
@@ -426,42 +412,15 @@
 
         try {
             setDownloadStatus('解析下载计划...');
-            const plan = await buildDownloadPlan(entries);
-            if (plan.failedEntries.length > 0) {
-                const failedListTop5Lines =
-                    plan.failedEntries
-                        .slice(0, 5)
-                        .map(entry => entry.repoPath || entry.githubPath);
+            const { items, failedEntries } = await resolveSelectedEntries(entries);
+            const zipFilename = `github_files_${Date.now()}.zip`;
 
-                if (plan.failedEntries.length > 5) {
-                    failedListTop5Lines.push('...');
-                }
-
-                if (plan.items.length === 0) {
-                    clearDownloadStatus();
-                    await showAlertDialog({
-                        title: '没有可下载的文件',
-                        message: '所选条目全部解析失败，无法继续下载。',
-                        lines: failedListTop5Lines,
-                    });
-                    return;
-                }
-
-                const ok = await showConfirmDialog({
-                    title: '继续下载其余成功项？',
-                    message: `有 ${plan.failedEntries.length} 个条目解析失败，是否继续下载其余成功项？`,
-                    lines: failedListTop5Lines,
-                    confirmText: '继续下载',
-                    cancelText: '取消',
-                });
-
-                if (!ok) {
-                    clearDownloadStatus();
-                    return;
-                }
+            const shouldContinue = await confirmContinueAfterResolutionFailures(failedEntries, items.length);
+            if (!shouldContinue) {
+                return;
             }
 
-            if (plan.items.length === 0) {
+            if (items.length === 0) {
                 clearDownloadStatus();
                 await showAlertDialog({
                     title: '没有可下载的文件',
@@ -470,7 +429,7 @@
                 return;
             }
 
-            const result = await executeDownloadPlan(plan);
+            const result = await downloadAndSave(items, zipFilename);
             if (result.failed.length === 0) {
                 return;
             }
@@ -480,8 +439,8 @@
                 return;
             }
 
-            const retryPlan = buildRetryPlanFromFailed(plan, result.failed);
-            const retryResult = await executeDownloadPlan(retryPlan);
+            const retryItems = result.failed.map(({ item }) => item);
+            const retryResult = await downloadAndSave(retryItems, `_RETRY_${zipFilename}`);
             if (retryResult.failed.length > 0) {
                 await alertFinalFailedItems(retryResult);
             }
@@ -490,15 +449,15 @@
         }
     }
 
-    // Download Planning
+    // Selection Resolution
 
     /**
-     * 根据选中项构建下载计划
+     * 将选中项解析为下载项列表。
      *
      * @param {SelectionEntry[]} entries
-     * @returns {Promise<DownloadPlan>}
+     * @returns {Promise<SelectionResolutionResult>}
      */
-    async function buildDownloadPlan(entries) {
+    async function resolveSelectedEntries(entries) {
         const items = [];
         const failedEntries = [];
 
@@ -512,71 +471,58 @@
 
         return {
             items,
-            outputMode: items.length === 1 ? 'single' : 'zip',
-            zipFilename: `github_files_${Date.now()}.zip`,
             failedEntries,
-        }
+        };
     }
-
-    // failedItems: Array<{ item: DownloadItem, error: Error }>
-    function buildRetryPlanFromFailed(plan, failedItems) {
-        const items = failedItems.map(f => f.item);
-
-        return {
-            items,
-            outputMode: items.length === 1 ? 'single' : 'zip',
-            // plan 中的 zipFilename: github_files_${Date.now()}.zip
-            zipFilename: `_RETRY_${plan.zipFilename}`,
-            failedEntries: [], // 重试计划只包含已解析成功但下载失败的文件项
-        }
-    }
-
-    // Download Execution
 
     /**
-     * 执行下载计划，并在存在成功文件时立即保存结果。
-     * 此函数不涉及用户交互
-     *
-     * @param {DownloadPlan} plan
-     * @returns {Promise<DownloadExecutionResult>}
+     * @param {SelectionEntry[]} failedEntries
+     * @param {number} resolvedItemCount
+     * @returns {Promise<boolean>}
      */
-    async function executeDownloadPlan(plan) {
-        const result = await fetchDownloadItems(plan.items, ({ completed, total }) => {
-            setDownloadStatus(`下载中 ${completed} / ${total}`);
+    async function confirmContinueAfterResolutionFailures(failedEntries, resolvedItemCount) {
+        if (failedEntries.length === 0) {
+            return true;
+        }
+
+        const failedListTop5Lines = failedEntries
+            .slice(0, 5)
+            .map(entry => entry.repoPath || entry.githubPath);
+
+        if (failedEntries.length > 5) {
+            failedListTop5Lines.push('...');
+        }
+
+        if (resolvedItemCount === 0) {
+            clearDownloadStatus();
+            await showAlertDialog({
+                title: '没有可下载的文件',
+                message: '所选条目全部解析失败，无法继续下载。',
+                lines: failedListTop5Lines,
+            });
+            return false;
+        }
+
+        const shouldContinue = await showConfirmDialog({
+            title: '继续下载其余成功项？',
+            message: `有 ${failedEntries.length} 个条目解析失败，是否继续下载其余成功项？`,
+            lines: failedListTop5Lines,
+            confirmText: '继续下载',
+            cancelText: '取消',
         });
 
-        if (result.succeeded.length > 0) {
-            let artifact;
-            if (plan.outputMode === 'single') {
-                setDownloadStatus('保存中...');
-                artifact = buildSingleFileArtifact(result.succeeded[0]);
-            } else if (plan.outputMode === 'zip') {
-                setDownloadStatus('打包中...');
-                artifact = buildZipArtifact(result.succeeded, plan.zipFilename);
-            } else {
-                logger.error("download", `未知的输出模式: ${plan.outputMode}`);
-                return result;
-            }
-            saveAs(artifact.blob, artifact.downloadName);
-            logger.info("download", `下载完成，成功 ${result.succeeded.length} 个，失败 ${result.failed.length} 个`);
+        if (!shouldContinue) {
+            clearDownloadStatus();
         }
 
-        if (result.failed.length === 0) {
-            setTransientDownloadStatus('下载完成');
-        } else if (result.succeeded.length > 0) {
-            setTransientDownloadStatus(`部分完成，失败 ${result.failed.length} 个`);
-        } else {
-            setTransientDownloadStatus('下载失败');
-        }
-
-        return result;
+        return shouldContinue;
     }
 
     /**
      * 将选中项解析为一个或多个下载项。
      *
      * @param {SelectionEntry} entry
-     * @returns {Promise<ResolveSelectionResult>}
+     * @returns {Promise<SelectionResolutionResult>}
      */
     async function resolveSelectionEntry(entry) {
         if (!entry) {
@@ -672,21 +618,50 @@
         return items;
     }
 
+    // Download Execution
+
     /**
-     * @param {DownloadItem & { bytes: Uint8Array }} file
-     * @returns {DownloadArtifact}
+     * 下载文件并保存成功结果。
+     *
+     * @param {DownloadItem[]} items
+     * @param {string} zipFilename
+     * @returns {Promise<DownloadExecutionResult>}
      */
-    function buildSingleFileArtifact(file) {
-        const blob = new Blob([file.bytes], { type: "application/octet-stream" });
-        return { blob, downloadName: file.fileName };
+    async function downloadAndSave(items, zipFilename) {
+        const outputMode = items.length === 1 ? 'single' : 'zip';
+        const result = await fetchDownloadItems(items, ({ completed, total }) => {
+            setDownloadStatus(`下载中 ${completed} / ${total}`);
+        });
+
+        if (result.succeeded.length > 0) {
+            if (outputMode === 'single') {
+                setDownloadStatus('保存中...');
+                const file = result.succeeded[0];
+                const blob = new Blob([file.bytes], { type: "application/octet-stream" });
+                saveAs(blob, file.fileName);
+            } else {
+                setDownloadStatus('打包中...');
+                saveAs(buildZipBlob(result.succeeded), zipFilename);
+            }
+            logger.info("download", `下载完成，成功 ${result.succeeded.length} 个，失败 ${result.failed.length} 个`);
+        }
+
+        if (result.failed.length === 0) {
+            setTransientDownloadStatus('下载完成');
+        } else if (result.succeeded.length > 0) {
+            setTransientDownloadStatus(`部分完成，失败 ${result.failed.length} 个`);
+        } else {
+            setTransientDownloadStatus('下载失败');
+        }
+
+        return result;
     }
 
     /**
      * @param {Array<DownloadItem & { bytes: Uint8Array }>} files
-     * @param {string} zipFilename
-     * @returns {DownloadArtifact}
+     * @returns {Blob}
      */
-    function buildZipArtifact(files, zipFilename) {
+    function buildZipBlob(files) {
         const entries = {};
 
         for (const file of files) {
@@ -697,8 +672,7 @@
         const zipU8 = fflate.zipSync(entries, { level: SETTINGS.COMPRESS_LEVEL });
         logger.debug("download", "打包完成!");
 
-        const blob = new Blob([zipU8], { type: "application/zip" });
-        return { blob, downloadName: zipFilename };
+        return new Blob([zipU8], { type: "application/zip" });
     }
 
     /**
