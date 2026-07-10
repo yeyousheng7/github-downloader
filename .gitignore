@@ -1,3 +1,7 @@
 # local dev docs
 TODO.md
 GREASYFORK.md
+
+# build output and dependencies
+node_modules/
+dist/
