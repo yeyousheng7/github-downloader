@@ -52,23 +52,7 @@
 
 ## 开发
 
-项目使用 Vite 和 `vite-plugin-monkey` 将 `src/` 下的模块构建为单个用户脚本。
-
-```bash
-npm install
-npm run build
-```
-
-构建产物位于 `dist/downloader.user.js`。开发时可以执行 `npm run dev`，在源文件变化后自动重新构建。
-
-主要源码模块：
-
-- `repository-ui.js`：GitHub 页面生命周期、表格注入和选择状态
-- `github.js`：GitHub 页面解析、URL 构造和 API 请求
-- `download.js`：选择项解析、下载、重试和 ZIP 输出
-- `dialogs.js`：弹窗、下载状态和 Token 设置
-- `config.js`：运行配置、DOM 选择器和日志
-- `styles.css`：页面注入样式
+开发环境、项目结构和构建方式请参阅 [DEVELOPMENT.md](DEVELOPMENT.md)。
 
 ## 效果
 

@@ -1,0 +1,53 @@
+name: Build Userscript
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: userscript-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Userscript
+        run: npm run build
+
+      - name: Verify output syntax
+        run: node --check dist/downloader.user.js
+
+      - name: Verify output version
+        shell: bash
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          BUILT_VERSION=$(awk '$2 == "@version" { print $3; exit }' dist/downloader.user.js)
+          test "$BUILT_VERSION" = "$VERSION"
+
+      - name: Upload Userscript
+        uses: actions/upload-artifact@v4
+        with:
+          name: github-downloader-${{ github.sha }}
+          path: dist/downloader.user.js
+          if-no-files-found: error
+          retention-days: 14

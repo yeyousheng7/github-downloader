@@ -1,5 +1,6 @@
 import { defineConfig } from 'vite';
 import monkey from 'vite-plugin-monkey';
+import packageJson from './package.json' with { type: 'json' };
 
 export default defineConfig({
     plugins: [
@@ -11,7 +12,7 @@ export default defineConfig({
                     en: 'GitHub Multi-File Downloader',
                 },
                 namespace: 'https://github.com/yeyousheng7/github-multi-file-downloader',
-                version: '1.1.1',
+                version: packageJson.version,
                 description: {
                     '': '在 GitHub 仓库页面勾选多个文件或文件夹，并将它们直接下载或打包为 ZIP。',
                     en: 'Add checkboxes to GitHub repository file lists and download selected files or folders as individual files or ZIP archives.',
