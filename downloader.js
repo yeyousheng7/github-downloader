@@ -170,7 +170,7 @@
 
     /**
      * @typedef {Object} GitTreeNode
-     * @property {string} path
+     * @property {string} path 相对于本次请求 Tree 根目录的路径
      * @property {'blob'|'tree'|'commit'} type
      * @property {string} sha
      */
@@ -606,38 +606,127 @@
             throw new Error(`无法解析文件夹上下文: ${entry?.githubPath}`);
         }
 
-        const treeData = await fetchGitTreeRecursive(ctx, treeRequestCache);
-        if (!treeData || !Array.isArray(treeData.tree)) {
-            throw new Error(`Tree API 返回异常: ${entry.githubPath}`);
+        const rootTree = await fetchGitTree(ctx, ctx.ref, true, treeRequestCache);
+        let filePaths;
+
+        if (rootTree.truncated) {
+            const folderTreeSha = await resolveFolderTreeSha(ctx, rootTree, treeRequestCache);
+            filePaths = await collectTreeFilePaths(ctx, folderTreeSha, ctx.repoPath, treeRequestCache);
+        } else {
+            const folderPrefix = `${ctx.repoPath}/`;
+            filePaths = rootTree.tree
+                .filter(node => node.type === 'blob' && node.path.startsWith(folderPrefix))
+                .map(node => node.path);
         }
 
-        if (treeData.truncated) {
-            throw new Error(`文件夹过大，无法展开: ${entry.githubPath}`);
-        }
+        return filePaths.map(repoPath => {
+            const urls = buildGitHubFileUrls(ctx, repoPath);
 
-        const folderPrefix = `${ctx.repoPath}/`;
-        const items = [];
-
-        for (const node of treeData.tree) {
-            if (node.type !== 'blob') {
-                continue;
-            }
-
-            if (!node.path.startsWith(folderPrefix)) {
-                continue;
-            }
-
-            const urls = buildGitHubFileUrls(ctx, node.path);
-
-            items.push({
+            return {
                 githubPath: urls.githubPath,
                 rawUrl: urls.rawUrl,
-                outputPath: node.path,
-                fileName: node.path.split('/').pop() || '',
-            });
+                outputPath: repoPath,
+                fileName: repoPath.split('/').pop() || '',
+            };
+        });
+    }
+
+    /**
+     * 从截断的仓库 Tree 中复用最接近目标目录的 SHA，并补齐剩余路径。
+     *
+     * @param {GitHubEntryContext} ctx
+     * @param {GitTreeResponse} rootTree
+     * @param {TreeRequestCache} treeRequestCache
+     * @returns {Promise<string>}
+     */
+    async function resolveFolderTreeSha(ctx, rootTree, treeRequestCache) {
+        let closestPath = '';
+        let currentTreeSha = rootTree.sha;
+
+        for (const node of rootTree.tree) {
+            if (node.type !== 'tree') {
+                continue;
+            }
+
+            const containsTarget = ctx.repoPath === node.path
+                || ctx.repoPath.startsWith(`${node.path}/`);
+
+            if (containsTarget && node.path.length > closestPath.length) {
+                closestPath = node.path;
+                currentTreeSha = node.sha;
+            }
         }
 
-        return items;
+        const remainingPath = closestPath
+            ? ctx.repoPath.slice(closestPath.length + 1)
+            : ctx.repoPath;
+
+        for (const segment of remainingPath.split('/').filter(Boolean)) {
+            const treeData = await fetchGitTree(ctx, currentTreeSha, false, treeRequestCache);
+            if (treeData.truncated) {
+                throw new Error(`非递归 Tree 返回被截断: ${closestPath || '/'}`);
+            }
+
+            const childTree = treeData.tree.find(node => (
+                node.type === 'tree' && node.path === segment
+            ));
+
+            if (!childTree) {
+                throw new Error(`无法定位文件夹 Tree: ${ctx.repoPath}`);
+            }
+
+            currentTreeSha = childTree.sha;
+            closestPath = joinRepoPath(closestPath, segment);
+        }
+
+        return currentTreeSha;
+    }
+
+    /**
+     * 获取指定 Tree 下的完整文件路径；递归响应被截断时按直属子 Tree 分治。
+     *
+     * @param {GitHubEntryContext} ctx
+     * @param {string} treeSha
+     * @param {string} baseRepoPath
+     * @param {TreeRequestCache} treeRequestCache
+     * @returns {Promise<string[]>}
+     */
+    async function collectTreeFilePaths(ctx, treeSha, baseRepoPath, treeRequestCache) {
+        const recursiveTree = await fetchGitTree(ctx, treeSha, true, treeRequestCache);
+
+        if (!recursiveTree.truncated) {
+            return recursiveTree.tree
+                .filter(node => node.type === 'blob')
+                .map(node => joinRepoPath(baseRepoPath, node.path));
+        }
+
+        const directTree = await fetchGitTree(ctx, treeSha, false, treeRequestCache);
+        if (directTree.truncated) {
+            throw new Error(`非递归 Tree 返回被截断: ${baseRepoPath}`);
+        }
+
+        const filePaths = [];
+
+        for (const node of directTree.tree) {
+            const repoPath = joinRepoPath(baseRepoPath, node.path);
+
+            if (node.type === 'blob') {
+                filePaths.push(repoPath);
+                continue;
+            }
+
+            if (node.type === 'tree') {
+                const childPaths = await collectTreeFilePaths(
+                    ctx,
+                    node.sha,
+                    repoPath,
+                    treeRequestCache
+                );
+                filePaths.push(...childPaths);
+            }
+        }
+
+        return filePaths;
     }
 
     // Download Execution
@@ -928,6 +1017,15 @@
     }
 
     /**
+     * @param {string} basePath
+     * @param {string} childPath
+     * @returns {string}
+     */
+    function joinRepoPath(basePath, childPath) {
+        return [basePath, childPath].filter(Boolean).join('/');
+    }
+
+    /**
      * 构造同一文件的 GitHub 页面路径和原始下载 URL。
      *
      * @param {GitHubEntryContext} ctx
@@ -1172,23 +1270,33 @@
     }
 
     /**
-     * 获取当前 ref 下的完整 Git tree
+     * 获取指定 ref 或 SHA 对应的 Git Tree。
      *
-     * 请求头由 buildGitHubApiHeaders() 统一构建，支持私有仓库 API 访问
+     * 请求头由 buildGitHubApiHeaders() 统一构建，支持私有仓库 API 访问。
+     * 非递归请求必须省略 recursive 参数，GitHub 会将该参数的任意值视为启用递归。
      *
      * @param {GitHubEntryContext} ctx
+     * @param {string} treeish
+     * @param {boolean} recursive
      * @param {TreeRequestCache} treeRequestCache
      * @returns {Promise<GitTreeResponse>}
      */
-    function fetchGitTreeRecursive(ctx, treeRequestCache) {
-        const treeRef = encodeURIComponent(ctx.ref);
-        const url = `https://api.github.com/repos/${ctx.owner}/${ctx.repo}/git/trees/${treeRef}?recursive=1`;
+    function fetchGitTree(ctx, treeish, recursive, treeRequestCache) {
+        const encodedTreeish = encodeURIComponent(treeish);
+        const recursiveQuery = recursive ? '?recursive=1' : '';
+        const url = `https://api.github.com/repos/${ctx.owner}/${ctx.repo}/git/trees/${encodedTreeish}${recursiveQuery}`;
         let request = treeRequestCache.get(url);
 
         if (!request) {
             request = gmRequest(url, {
                 responseType: "json",
                 headers: buildGitHubApiHeaders(),
+            }).then(response => {
+                if (!response || typeof response.sha !== 'string' || !Array.isArray(response.tree)) {
+                    throw new Error(`Tree API 返回异常: ${treeish}`);
+                }
+
+                return response;
             });
             treeRequestCache.set(url, request);
         }
