@@ -169,6 +169,22 @@
      */
 
     /**
+     * @typedef {Object} GitTreeNode
+     * @property {string} path
+     * @property {'blob'|'tree'|'commit'} type
+     * @property {string} sha
+     */
+
+    /**
+     * @typedef {Object} GitTreeResponse
+     * @property {string} sha
+     * @property {GitTreeNode[]} tree
+     * @property {boolean} truncated
+     */
+
+    /** @typedef {Map<string, Promise<GitTreeResponse>>} TreeRequestCache */
+
+    /**
      * @typedef {Object} SelectionResolutionResult
      * @property {DownloadItem[]} items
      * @property {SelectionEntry[]} failedEntries
@@ -461,9 +477,10 @@
     async function resolveSelectedEntries(entries) {
         const items = [];
         const failedEntries = [];
+        const treeRequestCache = new Map();
 
         for (const entry of entries) {
-            const resolved = await resolveSelectionEntry(entry);
+            const resolved = await resolveSelectionEntry(entry, treeRequestCache);
             items.push(...resolved.items);
             failedEntries.push(...resolved.failedEntries);
         }
@@ -523,9 +540,10 @@
      * 将选中项解析为一个或多个下载项。
      *
      * @param {SelectionEntry} entry
+     * @param {TreeRequestCache} treeRequestCache
      * @returns {Promise<SelectionResolutionResult>}
      */
-    async function resolveSelectionEntry(entry) {
+    async function resolveSelectionEntry(entry, treeRequestCache) {
         if (!entry) {
             return { items: [], failedEntries: [] };
         }
@@ -537,7 +555,7 @@
 
         if (entry.kind === 'folder') {
             try {
-                const items = await expandFolderEntry(entry);
+                const items = await expandFolderEntry(entry, treeRequestCache);
                 return { items, failedEntries: [] };
             } catch (error) {
                 logger.error("plan", `展开文件夹失败: ${entry.githubPath}`, error);
@@ -579,15 +597,16 @@
      * 展开文件夹选中项为下载项列表。
      *
      * @param {SelectionEntry} entry
+     * @param {TreeRequestCache} treeRequestCache
      * @returns {Promise<DownloadItem[]>}
      */
-    async function expandFolderEntry(entry) {
+    async function expandFolderEntry(entry, treeRequestCache) {
         const ctx = parseGitHubEntryContext(entry.githubPath);
         if (!ctx || ctx.viewKind !== 'tree') {
             throw new Error(`无法解析文件夹上下文: ${entry?.githubPath}`);
         }
 
-        const treeData = await fetchGitTreeRecursive(ctx);
+        const treeData = await fetchGitTreeRecursive(ctx, treeRequestCache);
         if (!treeData || !Array.isArray(treeData.tree)) {
             throw new Error(`Tree API 返回异常: ${entry.githubPath}`);
         }
@@ -1158,16 +1177,23 @@
      * 请求头由 buildGitHubApiHeaders() 统一构建，支持私有仓库 API 访问
      *
      * @param {GitHubEntryContext} ctx
-     * @returns {Promise<any>}
+     * @param {TreeRequestCache} treeRequestCache
+     * @returns {Promise<GitTreeResponse>}
      */
-    async function fetchGitTreeRecursive(ctx) {
+    function fetchGitTreeRecursive(ctx, treeRequestCache) {
         const treeRef = encodeURIComponent(ctx.ref);
         const url = `https://api.github.com/repos/${ctx.owner}/${ctx.repo}/git/trees/${treeRef}?recursive=1`;
+        let request = treeRequestCache.get(url);
 
-        return await gmRequest(url, {
-            responseType: "json",
-            headers: buildGitHubApiHeaders(),
-        });
+        if (!request) {
+            request = gmRequest(url, {
+                responseType: "json",
+                headers: buildGitHubApiHeaders(),
+            });
+            treeRequestCache.set(url, request);
+        }
+
+        return request;
     }
 
     /**
