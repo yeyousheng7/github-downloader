@@ -34,6 +34,7 @@
 
     let currentPageKey = null; // 当前页面唯一标识, 用于检测页面变化
 
+    const GITHUB_ORIGIN = 'https://github.com';
     const GITHUB_ROOT_ID = "repo-content-pjax-container";
 
     const githubSelectors = {
@@ -558,15 +559,17 @@
             return null;
         }
 
-        const rawUrl = blobToGithubRawUrl(entry.githubPath);
-        if (!rawUrl) {
+        const ctx = parseGitHubEntryContext(entry.githubPath);
+        if (!ctx || ctx.viewKind !== 'blob') {
             logger.warn("plan", `无法转换为 raw URL: ${entry.githubPath}`);
             return null;
         }
 
+        const urls = buildGitHubFileUrls(ctx, entry.repoPath);
+
         return {
-            githubPath: entry.githubPath,
-            rawUrl,
+            githubPath: urls.githubPath,
+            rawUrl: urls.rawUrl,
             outputPath: entry.repoPath,
             fileName: entry.fileName,
         };
@@ -605,11 +608,11 @@
                 continue;
             }
 
-            const encodedRepoPath = encodeGitHubRepoPath(node.path);
+            const urls = buildGitHubFileUrls(ctx, node.path);
 
             items.push({
-                githubPath: `/${ctx.owner}/${ctx.repo}/blob/${ctx.ref}/${encodedRepoPath}`,
-                rawUrl: `https://github.com/${ctx.owner}/${ctx.repo}/raw/${ctx.ref}/${encodedRepoPath}`,
+                githubPath: urls.githubPath,
+                rawUrl: urls.rawUrl,
                 outputPath: node.path,
                 fileName: node.path.split('/').pop() || '',
             });
@@ -892,17 +895,35 @@
     }
 
     /**
-     * 将仓库相对路径编码回 GitHub URL 可用形式。
+     * 将 GitHub ref 或仓库相对路径逐段编码为 URL 可用形式。
      *
-     * @param {string} repoPath
+     * @param {string} value
      * @returns {string}
      */
-    function encodeGitHubRepoPath(repoPath) {
-        return repoPath
+    function encodeGitHubPath(value) {
+        return value
             .split('/')
             .filter(Boolean)
             .map(segment => encodeURIComponent(segment))
             .join('/');
+    }
+
+    /**
+     * 构造同一文件的 GitHub 页面路径和原始下载 URL。
+     *
+     * @param {GitHubEntryContext} ctx
+     * @param {string} repoPath
+     * @returns {{ githubPath: string, rawUrl: string }}
+     */
+    function buildGitHubFileUrls(ctx, repoPath) {
+        const encodedRef = encodeGitHubPath(ctx.ref);
+        const encodedRepoPath = encodeGitHubPath(repoPath);
+        const repoBasePath = `/${ctx.owner}/${ctx.repo}`;
+
+        return {
+            githubPath: `${repoBasePath}/blob/${encodedRef}/${encodedRepoPath}`,
+            rawUrl: new URL(`${repoBasePath}/raw/${encodedRef}/${encodedRepoPath}`, GITHUB_ORIGIN).href,
+        };
     }
 
     /**
@@ -1038,27 +1059,6 @@
 
         const row = latestCommitAnchor.closest('tr');
         return row instanceof HTMLTableRowElement ? row : null;
-    }
-
-    /**
-     * 将 GitHub blob path 转换为 raw URL，在无法转化时，返回 null。
-     *
-     * 例如:
-     * - 输入: "/owner/repo/blob/ref/path/to/file"
-     * - 输出: "https://github.com/owner/repo/raw/ref/path/to/file"
-     *
-     * @param {string} filePath
-     * @returns {string|null}
-     */
-    function blobToGithubRawUrl(filePath) {
-        const u = new URL(filePath, location.origin);
-        const parts = u.pathname.split('/');
-        // ["", owner, repo, "blob", ref, ...path]
-        if (parts.length < 6 || parts[3] !== 'blob') {
-            return null;
-        }
-        parts[3] = 'raw';
-        return `https://github.com/${parts.join('/')}`;
     }
 
     /**
