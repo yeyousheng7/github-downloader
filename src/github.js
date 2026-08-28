@@ -185,26 +185,6 @@ export function findParentDirectoryRow(table) {
 }
 
 /**
- * 在首页文件表格中定位 latest commit 行。
- *
- * @param {HTMLElement} table
- * @returns {HTMLTableRowElement|null}
- */
-export function findLatestCommitRow(table) {
-    if (!table) {
-        return null;
-    }
-
-    const latestCommitAnchor = queryFirst(githubSelectors.latestCommitAnchorCandidate, table);
-    if (!latestCommitAnchor) {
-        return null;
-    }
-
-    const row = latestCommitAnchor.closest('tr');
-    return row instanceof HTMLTableRowElement ? row : null;
-}
-
-/**
  * 从 GitHub 页面路径和当前 ref 解析仓库上下文。
  *
  * @param {string} githubPath

@@ -2,7 +2,6 @@ import { GITHUB_ROOT_ID, logger } from './config.js';
 import { openGitHubTokenDialog } from './dialogs.js';
 import { startDownload } from './download.js';
 import {
-    findLatestCommitRow,
     findParentDirectoryRow,
     findRepositoryFileTable,
     getCurrentRefButton,
@@ -137,7 +136,6 @@ function ensureHeader(table) {
     }
 
     headRow.insertBefore(headerCell, headRow.firstElementChild);
-    fixColumnWidths(table);
 }
 
 // 在表格上方添加下载工具栏(下载按钮与状态显示)
@@ -148,11 +146,22 @@ function addDownloadToolbar(table) {
         return;
     }
 
-    const existingToolbar = document.querySelector('.tm-download-toolbar');
-    if (existingToolbar) {
+    let toolbar = document.querySelector('.tm-download-toolbar');
+
+    if (toolbar) {
+        if (toolbar.parentElement !== container ||
+            toolbar !== container.firstElementChild) {
+            container.prepend(toolbar);
+        }
         return;
     }
 
+    toolbar = createDownloadToolbar();
+    container.prepend(toolbar);
+    logger.debug('ui', '添加下载工具栏');
+}
+
+function createDownloadToolbar() {
     const toolbar = document.createElement('div');
     toolbar.className = 'tm-download-toolbar';
 
@@ -169,21 +178,8 @@ function addDownloadToolbar(table) {
 
     toolbar.appendChild(button);
     toolbar.appendChild(status);
-    container.insertBefore(toolbar, table);
-    logger.debug('ui', '添加下载工具栏');
-}
 
-function fixColumnWidths(table) {
-    // 首页的 latest commit 行需要补上新增的复选框列宽度。
-    const latestCommitRow = findLatestCommitRow(table);
-    latestCommitRow?.querySelectorAll('td[colspan]').forEach(cell => {
-        const colspan = cell.getAttribute('colspan');
-        if (colspan) {
-            const newColspan = parseInt(colspan) + 1;
-            cell.setAttribute('colspan', newColspan.toString());
-            logger.debug('ui', `更新 latest commit 行的 colspan 为 ${newColspan}`);
-        }
-    });
+    return toolbar;
 }
 
 function bindTableEvents(table) {

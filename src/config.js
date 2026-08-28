@@ -3,12 +3,9 @@ export const GITHUB_ROOT_ID = 'repo-content-pjax-container';
 
 export const githubSelectors = {
     // 文件表格本体
-    // 主策略依赖“table 内含文件/目录条目链接”来判定是否命中，
-    // 因此这里可以接受较宽的候选；
-    // 后面的 module class 仅作为备选，GitHub 可能随时调整样式导致其失效
+    // 通过文件列表的 aria-labelledby 定位表格
     tableCandidate: [
         'table[aria-labelledby="folders-and-files"]',
-        '.Table-module__Box__HZKiQ',
     ],
     // 文件/目录主链接
     // 优先使用 aria-label 中带 "(File)/(Directory)" 的语义化链接，
@@ -28,6 +25,7 @@ export const githubSelectors = {
         'a[aria-label="Parent directory"]',
     ],
     // 首页 latest commit 区块内部的稳定锚点
+    // TODO: 后续删除，如果确认没有存在必要
     latestCommitAnchorCandidate: [
         '[data-testid="latest-commit"]',
         '[data-testid="latest-commit-details"]',
