@@ -43,7 +43,6 @@ function apply() {
         logger.debug('ui', '当前页面不存在 ref 选择按钮，跳过注入');
         return;
     }
-    ensureHeader(table);
     addCheckboxes(table);
     addDownloadToolbar(table);
     bindTableEvents(table);
@@ -76,7 +75,12 @@ function registerMenuCommands() {
     GM_registerMenuCommand('设置 GitHub Token', openGitHubTokenDialog);
 }
 
+// 在表格中添加复选框列，上一级目录行的复选框禁用，文件行的复选框可用
 function addCheckboxes(table) {
+    // 修复表头单元格，获取空单元格用于放置复选框(如果命中 commmit line)
+    const headerCell = ensureHeader(table);
+
+
     // 下面需要先处理上一级目录行，再处理其余文件行
     // 先后顺序不可调换，否则按钮禁用状态将无法正确设置
     // 当前逻辑依赖于 addCheckboxToRow 中的幂等检查，以跳过上一级目录行的重复添加
@@ -94,6 +98,8 @@ function addCheckboxes(table) {
     for (const row of fileRows) {
         addCheckboxToRow(row);
     }
+
+    addSelectAllCheckbox(table, headerCell);
 }
 
 function addCheckboxToRow(rowElement, disabled = false) {
@@ -113,15 +119,70 @@ function addCheckboxToRow(rowElement, disabled = false) {
     rowElement.insertBefore(cell, rowElement.firstElementChild);
 }
 
+function addSelectAllCheckbox(table, headerCell) {
+    if (table.querySelector('.tm-select-all-cb') ||
+        document.querySelector('.tm-select-all-cb')) {
+        return;
+    }
+
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.className = 'tm-select-all-cb';
+    checkbox.setAttribute('aria-label', '全选当前目录');
+    checkbox.addEventListener('change', () => {
+        setAllRowsSelected(table, checkbox.checked);
+    });
+
+    const latestCommit = document.getElementById('latest-commit');
+
+    if (latestCommit) {
+        // 主页面
+        latestCommit.prepend(checkbox);
+        return;
+    }
+
+    if (headerCell) {
+        // 文件夹页面 fallback
+        headerCell.appendChild(checkbox);
+    }
+}
+
+function setAllRowsSelected(table, checked) {
+    const checkboxes = table.querySelectorAll(
+        'tbody .tm-left-cb:not(:disabled)'
+    );
+
+    for (const checkbox of checkboxes) {
+        const rowElement = checkbox.closest('tr');
+        const entry = parseSelectionFromRow(rowElement);
+
+        if (!entry) {
+            continue;
+        }
+
+        checkbox.checked = checked;
+
+        if (checked) {
+            selectedEntries.set(entry.githubPath, entry);
+        } else {
+            selectedEntries.delete(entry.githubPath);
+        }
+    }
+}
+
+// 确保表格有表头单元格, 并返回该单元格(空单元格，用于放置复选框)
 function ensureHeader(table) {
     const headRow = table.querySelector('thead tr');
     if (!headRow) {
         logger.warn('ui', '未找到表头行, 退出');
         return;
     }
-    if (headRow.querySelector('th.tm-left-cell')) {
-        return;
+
+    const existingCell = headRow.querySelector('th.tm-left-cell');
+    if (existingCell) {
+        return existingCell;
     }
+
 
     const referenceCell = headRow.firstElementChild;
     const headerCell = document.createElement('th');
@@ -136,6 +197,7 @@ function ensureHeader(table) {
     }
 
     headRow.insertBefore(headerCell, headRow.firstElementChild);
+    return headerCell;
 }
 
 // 在表格上方添加下载工具栏(下载按钮与状态显示)
@@ -190,6 +252,7 @@ function bindTableEvents(table) {
 
     table.addEventListener('change', (event) => {
         const target = event.target;
+        // 只处理在文件行复选框的事件, 忽略全选复选框点击事件
         if (!(target instanceof HTMLInputElement) || !target.classList.contains('tm-left-cb')) {
             return;
         }
